@@ -1,0 +1,68 @@
+// Urban Heat Island Mapping with ML (Synthetic Data)
+// Author: Amos Meremu Dogiye
+// GitHub: https://github.com/GTVSOFT
+
+var NUM_POINTS = 200; // >100 points
+var RANDOM_SEED = 42;
+var EXPORT_SCALE = 100; // meters
+
+// Define a fake "urban" AOI
+var aoi = ee.Geometry.Rectangle([77.55, 12.85, 77.65, 12.95]); // e.g., Bangalore-like region
+Map.centerObject(aoi, 13);
+
+// Generate synthetic observation points with "land surface temperature"
+var points = ee.FeatureCollection.randomPoints({
+  region: aoi,
+  points: NUM_POINTS,
+  seed: RANDOM_SEED
+}).map(function(pt) {
+  // Create synthetic temperature pattern: hotter in the center
+  var coords = pt.geometry().coordinates();
+  var lon = coords.get(0);
+  var lat = coords.get(1);
+  
+  // Simple gradient formula + random noise
+  var heatIndex = ee.Number(35)
+    .add(ee.Number(lon).subtract(77.6).abs().multiply(-10))
+    .add(ee.Number(lat).subtract(12.9).abs().multiply(-10))
+    .add(ee.Number.random().multiply(2));
+  
+  return pt.set({
+    temperature: heatIndex
+  });
+});
+
+Map.addLayer(points, {color: 'red'}, 'Temperature Points');
+
+// Synthetic thermal bands (simulate satellite thermal imagery)
+var thermal1 = ee.Image.random(RANDOM_SEED).multiply(5).add(30).rename('thermal1');
+var thermal2 = ee.Image.random(RANDOM_SEED + 1).multiply(5).add(30).rename('thermal2');
+var predictors = thermal1.addBands(thermal2).clip(aoi);
+
+// Sample thermal band values at observation points
+var samples = predictors.sampleRegions({
+  collection: points,
+  properties: ['temperature'],
+  scale: EXPORT_SCALE
+});
+
+// Train a Random Forest regression model
+var rf = ee.Classifier.smileRandomForest({
+  numberOfTrees: 100
+}).setOutputMode('REGRESSION')
+  .train({
+    features: samples,
+    classProperty: 'temperature',
+    inputProperties: ['thermal1', 'thermal2']
+  });
+
+// Predict across AOI
+var predictedTemp = predictors.classify(rf).clip(aoi);
+
+// Visualization parameters
+var visParams = {min: 28, max: 38, palette: ['blue', 'yellow', 'red']};
+Map.addLayer(predictedTemp, visParams, 'Predicted UHI Map');
+
+// Print sample data for inspection
+print('Synthetic temperature points:', points.limit(10));
+print('AOI:', aoi.bounds());
